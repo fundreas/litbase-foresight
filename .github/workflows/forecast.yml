@@ -1,0 +1,101 @@
+name: Forecast
+
+on:
+  workflow_dispatch:
+  schedule:
+    # GitHub cron is UTC only, so 22:10 and 22:40 Berlin time need two entries
+    # each: 21:xx UTC in winter (CET) and 20:xx UTC in summer (CEST). The first
+    # step of the job drops whichever pair does not currently match 22:xx Berlin.
+    - cron: '10 20 * * *'
+    - cron: '40 20 * * *'
+    - cron: '10 21 * * *'
+    - cron: '40 21 * * *'
+
+# Runs must never overlap, and a running forecast is worth more than a queued one
+concurrency:
+  group: forecast
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  forecast:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write  # for the keepalive commit
+    outputs:
+      fresh: ${{ steps.forecast.outputs.fresh }}
+    steps:
+      - name: Decide whether this is the 22:xx Berlin run
+        id: gate
+        run: |
+          hour=$(TZ=Europe/Berlin date +%H)
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "Manual run at Berlin hour $hour, not gating on the clock."
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          elif [ "$hour" = "22" ]; then
+            echo "Berlin hour is $hour, this is the run for today."
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Berlin hour is $hour, not 22. This cron entry belongs to the other DST offset, skipping."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout repository
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run forecast
+        id: forecast
+        if: steps.gate.outputs.run == 'true'
+        env:
+          KICK_USER: ${{ secrets.KICK_USER }}
+          KICK_PASS: ${{ secrets.KICK_PASS }}
+          COMPETITION_ID: '1'
+          OUTPUT_DIR: output
+        run: python run_forecast.py
+
+      - name: Upload Pages artifact
+        if: steps.forecast.outputs.fresh == 'true'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: output
+
+      # Scheduled workflows are paused after 60 days without a commit on a public
+      # repo. Publishing from an artifact never commits, so nudge the repo instead.
+      - name: Keep the schedule alive
+        if: steps.gate.outputs.run == 'true'
+        uses: gautamkrishnar/keepalive-workflow@v2
+        with:
+          time_elapsed: '45'
+
+  deploy:
+    needs: forecast
+    if: needs.forecast.outputs.fresh == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
