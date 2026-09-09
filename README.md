@@ -113,8 +113,9 @@ usable for development.
 
 Pages is published from an artifact, so successful runs produce no commits. Because
 GitHub pauses scheduled workflows on public repos after 60 days without a commit, the
-job ends with a [keepalive step](https://github.com/gautamkrishnar/keepalive-workflow)
-that nudges the repo every 45 days.
+job ends with a keepalive step that pushes an empty commit once the last one is 45 days
+old. It is a handful of inline shell rather than a third-party action, which is one less
+dependency that can go unmaintained or be blocked.
 
 ## Running it locally
 

@@ -47,11 +47,11 @@ jobs:
 
       - name: Checkout repository
         if: steps.gate.outputs.run == 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python
         if: steps.gate.outputs.run == 'true'
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.11'
           cache: pip
@@ -80,19 +80,37 @@ jobs:
 
       - name: Upload Pages artifact
         if: steps.forecast.outputs.published == 'true'
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
           path: output
 
       # Scheduled workflows are paused after 60 days without a commit on a public
-      # repo. Publishing from an artifact never commits, so nudge the repo instead.
+      # repo, and publishing from an artifact never commits. So push an empty commit
+      # once the last one is 45 days old. Done inline rather than with a third-party
+      # action, which is one less thing that can be blocked or go unmaintained.
       # Runs even when the forecast failed, so a broken run cannot also let the
-      # schedule lapse.
+      # schedule lapse. Only on a schedule, where the ref is the default branch.
       - name: Keep the schedule alive
-        if: always() && steps.gate.outputs.run == 'true'
-        uses: gautamkrishnar/keepalive-workflow@v2
-        with:
-          time_elapsed: '45'
+        if: always() && steps.gate.outputs.run == 'true' && github.event_name == 'schedule'
+        run: |
+          if [ ! -d .git ]; then
+            echo "No checkout in this run, nothing to keep alive."
+            exit 0
+          fi
+
+          age=$(( ( $(date +%s) - $(git log -1 --format=%ct) ) / 86400 ))
+          echo "Last commit is $age day(s) old."
+
+          if [ "$age" -lt 45 ]; then
+            echo "Under 45 days, the schedule is in no danger."
+            exit 0
+          fi
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit --allow-empty -m 'Keep the scheduled workflow alive'
+          git push
+          echo "Pushed an empty commit to reset the 60 day timer."
 
   deploy:
     needs: forecast
@@ -107,4 +125,4 @@ jobs:
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
