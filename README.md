@@ -115,6 +115,14 @@ printf 'KICK_TOKEN=eyJhbGciOi...\n' > .env
 python run_forecast.py
 ```
 
+On a Debian or Ubuntu box without the `python3-venv` package, use
+[uv](https://github.com/astral-sh/uv) instead of the first two lines:
+
+```bash
+uv venv .venv && uv pip install -p .venv -r requirements.txt
+.venv/bin/python run_forecast.py
+```
+
 The output lands in `output/`. Fetching the whole competition takes a few minutes.
 
 ### Authentication
