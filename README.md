@@ -93,12 +93,23 @@ not currently match 22:xx Berlin. Note that GitHub often starts scheduled runs 1
 minutes late; a run delayed past 23:00 Berlin is skipped by that check and the day is
 covered by the other cron entry.
 
-Before training anything, the run takes the **most common latest market value stamp
-across all players**. If that is older than today's Berlin date, Kickbase has not
-recalculated yet: the run prints why, reports `fresh=false` and exits successfully
-without writing anything, so the previously deployed data stays up. Only a run that
-reports `fresh=true` gets deployed. Both scheduled runs are idempotent — a deploy
-simply overwrites the last one.
+The run takes the **most common latest market value stamp across all players** and
+publishes that as `mvDate`. A run that beats the recalculation is not wasted: it
+forecasts from the newest values that exist, so with yesterday's data the day-1 entry
+predicts *today* and the series still covers five unknown days. `fresh` in the run
+summary says whether the data was today's; it does not gate the deploy. Both scheduled
+runs are idempotent — a deploy simply overwrites the last one, so the 22:40 run upgrades
+the morning's yesterday-based forecast as soon as today's values land.
+
+Because the first entry of every player's series carries **its own date**, a consumer can
+always tell which day a forecast starts from — read that, or `mvDate`, rather than
+assuming the first entry is today.
+
+The one case that does stop a run is data old enough to mean the feed is broken rather
+than late: past `--max-staleness-days` (default 7) the run refuses to publish and exits
+non-zero, so a stuck API cannot keep republishing ancient forecasts under a fresh
+`generatedAt`. `--allow-stale` overrides that, which is what makes an old local cache
+usable for development.
 
 Pages is published from an artifact, so successful runs produce no commits. Because
 GitHub pauses scheduled workflows on public repos after 60 days without a commit, the
@@ -151,13 +162,14 @@ flags. Run `python run_forecast.py --help` for the full list.
 | `HORIZON_DAYS` | `--horizon-days` | `5` | How many days ahead to forecast (1–30). |
 | `COMPETITION_ID` | `--competition-id` | `1` | 1 = Bundesliga, 2 = 2. Bundesliga, 3 = La Liga. |
 | `OUTPUT_DIR` | `--output-dir` | `output` | Where the published files are written. |
+| `MAX_STALENESS_DAYS` | `--max-staleness-days` | `7` | Refuse to publish data older than this. |
 | `CACHE_DB` | `--cache-db` | `player_data_total.db` | Path of the optional local SQLite cache. |
 | `WRITE_CACHE` | `--write-cache` | off | Save the fetched data to the cache. |
 | `USE_CACHE` | `--use-cache` | off | Read the cache instead of fetching, and skip the token. |
-| `ALLOW_STALE` | `--allow-stale` | off | Ignore the freshness rule. |
+| `ALLOW_STALE` | `--allow-stale` | off | Skip the staleness limit, however old the data is. |
 
 The last three exist for local development only. CI always fetches fresh data and always
-enforces the freshness rule.
+enforces the staleness limit.
 
 Changing `--horizon-days` changes the whole pipeline consistently: the number of targets,
 the columns the model predicts, `horizonDays` and `metrics` in `index.json`, and the
@@ -170,6 +182,8 @@ A quick loop that avoids re-downloading everything:
 python run_forecast.py --write-cache               # once, to fill the cache
 python run_forecast.py --use-cache --allow-stale   # afterwards, offline
 ```
+
+`--allow-stale` is needed there only once the cache is more than a week old.
 
 ## Setting up a fork
 

@@ -15,7 +15,7 @@ from features.predictions.modeling import train_model, evaluate_model, format_me
 from features.predictions.predictions import predict_horizons
 from features.output_writer import write_output
 from kickbase_api.config import DEFAULT_BASE_URL, get_token
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 import argparse
@@ -44,6 +44,10 @@ LAST_PFM_VALUES = 50    # in matchdays, max idk
 # A horizon beyond this is refused: every extra day holds one more day out of
 # training, and the output series would stop resembling a forecast.
 MAX_HORIZON_DAYS = 30
+
+# Market values older than this are treated as a broken feed rather than as
+# merely late, so a stuck API cannot keep republishing ancient forecasts.
+DEFAULT_MAX_STALENESS_DAYS = 7
 
 def env_flag(name):
     """Read a boolean switch from the environment."""
@@ -96,7 +100,12 @@ def parse_args(argv=None):
     )
     development.add_argument(
         "--allow-stale", action="store_true", default=env_flag("ALLOW_STALE"),
-        help="publish even when the market values are not from today",
+        help="skip the staleness limit entirely, however old the data is",
+    )
+    parser.add_argument(
+        "--max-staleness-days", type=int,
+        default=int(os.getenv("MAX_STALENESS_DAYS", DEFAULT_MAX_STALENESS_DAYS)),
+        help="refuse to publish data older than this many days (default: %(default)s)",
     )
 
     args = parser.parse_args(argv)
@@ -157,23 +166,32 @@ def main(argv=None):
 
     player_df = load_data(args)
 
-    # Freshness guard: Kickbase recalculates market values once a day, around 20:00
-    # UTC. If the newest values are not from today, this run has nothing new to say,
-    # so it stops here and the deploy job is skipped.
+    # Kickbase recalculates market values once a day, around 20:00 UTC. A run that
+    # gets there first simply forecasts from the newest values that exist, so the
+    # day-1 horizon then predicts today instead of tomorrow. Only data old enough
+    # to mean the feed is broken stops the run.
     mv_date = get_market_value_date(player_df)
     today = datetime.now(ZoneInfo("Europe/Berlin")).date()
+    staleness = (today - mv_date).days
 
-    if mv_date < today and not args.allow_stale:
+    set_step_output("fresh", "true" if staleness <= 0 else "false")
+    set_step_output("mv_date", mv_date.isoformat())
+
+    if staleness > args.max_staleness_days and not args.allow_stale:
         print(
-            f"\nMarket values are stale: newest stamp is {mv_date}, today is {today} "
-            "in Berlin. Kickbase has not recalculated yet -- exiting without writing "
-            "output, the next scheduled run will try again."
+            f"\nMarket values are {staleness} days old (newest stamp {mv_date}, today "
+            f"{today} in Berlin), beyond the limit of {args.max_staleness_days}. That is "
+            "too old to be a late recalculation, so this looks like a broken feed rather "
+            "than a slow one. Refusing to publish; pass --allow-stale to override."
         )
-        set_step_output("fresh", "false")
-        return 0
+        return 1
 
-    if mv_date < today:
-        print(f"\nWarning: market values are stale ({mv_date}), continuing because stale output was allowed.")
+    if staleness > 0:
+        print(
+            f"\nKickbase has not recalculated yet: the newest market values are from "
+            f"{mv_date}, {staleness} day(s) before today. Forecasting from those, so the "
+            f"first forecast entry is for {mv_date + timedelta(days=1)}."
+        )
 
     # Preprocess and split the data
     train_df, inference_df = preprocess_player_data(player_df, horizons)
@@ -192,7 +210,8 @@ def main(argv=None):
 
     write_output(args.output_dir, predictions_df, horizons, args.competition_id, mv_date, metrics)
 
-    set_step_output("fresh", "true")
+    # What the deploy job keys on: output exists and is ready to publish
+    set_step_output("published", "true")
     print("\nDone.")
 
     return 0
