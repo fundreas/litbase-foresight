@@ -1,11 +1,28 @@
-from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
 import pandas as pd
 import numpy as np
 
+# The forecast horizons in days. Each one gets its own target column and its own
+# output entry, predicted directly (not recursively) by a single multi-output model.
+HORIZONS = (1, 2, 3, 4, 5)
+
+# Which features to use for training and prediction
+FEATURES = [
+    "p", "mv", "days_to_next",
+    "mv_change_1d", "mv_trend_1d",
+    "mv_change_3d", "mv_vol_3d",
+    "mv_trend_7d", "market_divergence",
+]
+
+# What columns to learn and predict on, one per horizon
+TARGET_COLUMNS = [f"mv_target_h{k}_clipped" for k in HORIZONS]
+
 def preprocess_player_data(df):
-    """Preprocess the player data for modeling"""
-    
+    """Build features and the five per-horizon targets.
+
+    Returns (train_df, inference_df). train_df holds every row that has all five
+    targets, inference_df the single most recent row with a market value per player.
+    """
+
     # 1. Sort and filter
     df = df.sort_values(["player_id", "date"])
     df = df[     # Keep rows where team_id matches t1 or t2 OR where both t1 and t2 are missing
@@ -18,19 +35,21 @@ def preprocess_player_data(df):
     df["date"] = pd.to_datetime(df["date"])
     df["md"] = pd.to_datetime(df["md"])
 
-    # 2. Date and matchday calculations 
-    df["next_day"] = df.groupby("player_id")["date"].shift(-1) 
+    # 2. Date and matchday calculations
     df["next_md"] = df.groupby("player_id")["md"].transform(
         lambda x: x.shift(-1).where(x.shift(-1) != x).bfill()
     )
     df["days_to_next"] = (df["next_md"] - df["date"]).dt.days
 
-    # 3. Next day market value
-    df["mv_next_day"] = df.groupby("player_id")["mv"].shift(-1)
-    df["mv_target"] = df["mv_next_day"] - df["mv"]
+    # 3. Multi-horizon targets: the market value change k days ahead.
+    # The market value history is a contiguous daily series per player, so a
+    # positional shift of k rows equals a calendar shift of k days.
+    for k in HORIZONS:
+        df[f"mv_target_h{k}"] = df.groupby("player_id")["mv"].shift(-k) - df["mv"]
+
     df = df[df["mv"] != 0.0]
 
-    # 4. Feature engineering 
+    # 4. Feature engineering
     # Market value trend 1d
     df["mv_change_1d"] = df["mv"] - df.groupby("player_id")["mv"].shift(1)
     df["mv_trend_1d"] = df.groupby("player_id")["mv"].pct_change(fill_method=None)
@@ -38,7 +57,7 @@ def preprocess_player_data(df):
 
     # Market value trend 3d
     df["mv_change_3d"] = df["mv"] - df.groupby("player_id")["mv"].shift(3)
-    df["mv_vol_3d"] = df.groupby("player_id")["mv"].rolling(3).std().reset_index(0,drop=True)
+    df["mv_vol_3d"] = df.groupby("player_id")["mv"].rolling(3).std().reset_index(0, drop=True)
 
     # Market value trend 7d
     df["mv_trend_7d"] = df.groupby("player_id")["mv"].pct_change(periods=7, fill_method=None)
@@ -47,14 +66,17 @@ def preprocess_player_data(df):
     ## League-wide market context
     df["market_divergence"] = (df["mv"] / df.groupby("md")["mv"].transform("mean")).rolling(3).mean()
 
-    # 5. Clip outliers in mv_target
-    Q1 = df["mv_target"].quantile(0.25)
-    Q3 = df["mv_target"].quantile(0.75)
-    IQR = Q3 - Q1
-    lower_bound = Q1 - 2.5 * IQR
-    upper_bound = Q3 + 2.5 * IQR
+    # 5. Clip outliers per horizon, each with its own IQR bounds
+    for k in HORIZONS:
+        target = df[f"mv_target_h{k}"]
 
-    df["mv_target_clipped"] = df["mv_target"].clip(lower_bound, upper_bound)
+        Q1 = target.quantile(0.25)
+        Q3 = target.quantile(0.75)
+        IQR = Q3 - Q1
+        lower_bound = Q1 - 2.5 * IQR
+        upper_bound = Q3 + 2.5 * IQR
+
+        df[f"mv_target_h{k}_clipped"] = target.clip(lower_bound, upper_bound)
 
     # 6. Fill missing values
     df = df.fillna({
@@ -63,27 +85,36 @@ def preprocess_player_data(df):
         "mv_vol_3d": 0,
         "p": 0,
         "ppm": 0,
-        "won": -1
+        "won": -1,
     })
 
-    # 7. Cutout todays values and store them
-    now = datetime.now(ZoneInfo("Europe/Berlin"))
-    cutoff_time = now.replace(hour=22, minute=15, second=0, microsecond=0)
-    max_date = (now - timedelta(days=1)) if now <= cutoff_time else now
-    max_date = max_date.date()
+    # 7. The inference row of a player is their most recent row that has a market
+    # value. Rows without a market value only exist to carry an upcoming matchday.
+    with_mv = df[df["mv"].notna()]
+    inference_df = df.loc[with_mv.groupby("player_id")["date"].idxmax()].copy()
 
-    today_df = df[df["date"].dt.date >= max_date]
+    # 8. Training rows need all five targets, so the last five days of a player's
+    # history (the inference row among them) are never training rows.
+    train_df = df.dropna(subset=FEATURES + [f"mv_target_h{k}" for k in HORIZONS] + TARGET_COLUMNS)
 
-    # Drop those values from today from df
-    df = df[df["date"].dt.date < max_date]
+    # 9. A player whose history is too short to have any past matchday has no
+    # days_to_next, and the last row of a season has no upcoming matchday either.
+    # Fall back to the typical gap rather than dropping the player from the API.
+    fallback_days_to_next = train_df["days_to_next"].median()
+    inference_df = inference_df.fillna({
+        "days_to_next": fallback_days_to_next,
+        "mv_change_1d": 0,
+    })
 
-    # 8. Drop rows with NaN in critical columns
-    df = df.dropna(subset=["mv_change_1d", "next_day", "next_md", "days_to_next", "mv_next_day", "mv_target", "mv_target_clipped"])
+    missing = inference_df[FEATURES].isna().sum()
+    if missing.any():
+        raise RuntimeError(f"Inference rows still contain missing features: {missing[missing > 0].to_dict()}")
 
-    return df, today_df
+    print(f"Training rows: {len(train_df)}, inference rows: {len(inference_df)}")
 
+    return train_df, inference_df
 
-def split_data(df, features, target):
+def split_data(df, features, targets):
     """Split the data into training and testing sets based on date to avoid data leakage"""
 
     # Sort by date
@@ -97,9 +128,11 @@ def split_data(df, features, target):
     test = df[(df["date"] >= split_date)]
 
     X_train = train[features]
-    y_train = train[target]
+    y_train = train[targets]
 
     X_test = test[features]
-    y_test = test[target]
+    y_test = test[targets]
+
+    print(f"Train/test split at {split_date.date()}: {len(X_train)} train, {len(X_test)} test rows")
 
     return X_train, X_test, y_train, y_test
