@@ -1,4 +1,4 @@
-from kickbase_api.config import BASE_URL, get_json_with_token
+from kickbase_api.config import get_base_url, get_json_with_token
 from kickbase_api.others import get_all_teams
 from datetime import datetime, timedelta
 
@@ -8,7 +8,7 @@ def get_player_market_value(token, competition_id, player_id, last_mv_values):
     """Get the market value history of a player."""
 
     timeframe = 365  # amount of last values to retrieve, min 92, max 365
-    url = f"{BASE_URL}/competitions/{competition_id}/players/{player_id}/marketvalue/{timeframe}"
+    url = f"{get_base_url()}/competitions/{competition_id}/players/{player_id}/marketvalue/{timeframe}"
     data = get_json_with_token(url, token)
 
     # get last last_mv_values market values
@@ -29,7 +29,7 @@ def get_player_market_value(token, competition_id, player_id, last_mv_values):
 def get_player_info(token, competition_id, player_id):
     """Get basic information about a player."""
 
-    url = f"{BASE_URL}/competitions/{competition_id}/players/{player_id}"
+    url = f"{get_base_url()}/competitions/{competition_id}/players/{player_id}"
     data = get_json_with_token(url, token)
 
     player_info = {
@@ -51,7 +51,7 @@ def get_all_players(token, competition_id):
     team_ids = [team["team_id"] for team in get_all_teams(token, competition_id)]
 
     for team_id in team_ids:
-        url = f"{BASE_URL}/competitions/{competition_id}/teams/{team_id}/teamprofile"
+        url = f"{get_base_url()}/competitions/{competition_id}/teams/{team_id}/teamprofile"
         data = get_json_with_token(url, token)
 
         # Extract player IDs and names
@@ -65,7 +65,7 @@ def get_all_players(token, competition_id):
 def get_player_performance(token, competition_id, player_id, last_pfm_values, player_team):
     """Get the performance history of a player, including different metrics."""
 
-    url = f"{BASE_URL}/competitions/{competition_id}/players/{player_id}/performance"
+    url = f"{get_base_url()}/competitions/{competition_id}/players/{player_id}/performance"
     data = get_json_with_token(url, token)
 
     # Gather all performance entries

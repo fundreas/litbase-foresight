@@ -69,15 +69,17 @@ Features per player and day: matchday points, current market value, days to the 
 matchday, 1-day change and trend, 3-day change and volatility, 7-day trend, and the
 player's market value relative to the league average.
 
-The targets are five direct horizons, `mv.shift(-k) - mv` for k in 1..5, each clipped
-to its own IQR bounds. A single `RandomForestRegressor` is fitted with all five as a
+The targets are direct horizons, `mv.shift(-k) - mv` for k in 1..5, each clipped to its
+own IQR bounds. A single `RandomForestRegressor` is fitted with all five as a
 multi-output target, so **no prediction is ever fed back in as a feature** — day 5 is
 predicted from today's data, not from the day-4 prediction. Accuracy degrades with the
 horizon, as you would expect; `metrics` in `index.json` says by how much.
 
-A row is only a training row if all five of its targets exist, which means the last
-five days of each player's history are held out. The most recent day with a market
-value is the row the forecast is made from.
+A row is only a training row if all of its targets exist, which means the last five days
+of each player's history are held out. The most recent day with a market value is the row
+the forecast is made from.
+
+Five days is the default, not a hard-coded assumption — see `--horizon-days` below.
 
 ## Schedule and the freshness rule
 
@@ -109,43 +111,68 @@ that nudges the repo every 45 days.
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-printf 'KICK_USER=you@example.com\nKICK_PASS=your-password\n' > .env
+printf 'KICK_TOKEN=eyJhbGciOi...\n' > .env
 python run_forecast.py
 ```
 
 The output lands in `output/`. Fetching the whole competition takes a few minutes.
 
-| Variable | Default | Meaning |
-| --- | --- | --- |
-| `KICK_USER` | – | Kickbase email. Required. |
-| `KICK_PASS` | – | Kickbase password. Required. |
-| `COMPETITION_ID` | `1` | 1 = Bundesliga, 2 = 2. Bundesliga, 3 = La Liga. |
-| `OUTPUT_DIR` | `output` | Where the published files are written. |
-| `CACHE_DB` | `player_data_total.db` | Path of the optional local SQLite cache. |
-| `WRITE_CACHE` | off | Save the fetched data to `CACHE_DB`. |
-| `USE_CACHE` | off | Read `CACHE_DB` instead of fetching, and skip the login. |
-| `ALLOW_STALE` | off | Ignore the freshness rule. |
+### Authentication
 
-`WRITE_CACHE`, `USE_CACHE` and `ALLOW_STALE` exist for local development only. CI always
-fetches fresh data and always enforces the freshness rule.
+There is no login step. `KICK_TOKEN` is a Kickbase JWT that you obtain yourself — grab
+the `Authorization: Bearer` header from a logged-in Kickbase session in your browser's
+network tab, or POST to `/user/login` once by hand and keep the `tkn` field.
+
+**A JWT expires.** When it does, every request fails with `401`/`403` and the run
+reports that the token needs refreshing rather than a bare status code. Nothing here
+renews it for you, so a dead token means a dead schedule until you update the secret.
+That is the trade for not putting your password in CI.
+
+The token is read from the environment only, never from a command line argument, so it
+cannot leak into process listings or shell history.
+
+### Options
+
+Every option defaults to its environment variable, so CI can use `env:` and you can use
+flags. Run `python run_forecast.py --help` for the full list.
+
+| Variable | Flag | Default | Meaning |
+| --- | --- | --- | --- |
+| `KICK_TOKEN` | – | – | Kickbase JWT. Required. Environment only. |
+| `KICK_API` | `--api-base` | `https://api.kickbase.com/v4` | Base URL of the Kickbase API. |
+| `HORIZON_DAYS` | `--horizon-days` | `5` | How many days ahead to forecast (1–30). |
+| `COMPETITION_ID` | `--competition-id` | `1` | 1 = Bundesliga, 2 = 2. Bundesliga, 3 = La Liga. |
+| `OUTPUT_DIR` | `--output-dir` | `output` | Where the published files are written. |
+| `CACHE_DB` | `--cache-db` | `player_data_total.db` | Path of the optional local SQLite cache. |
+| `WRITE_CACHE` | `--write-cache` | off | Save the fetched data to the cache. |
+| `USE_CACHE` | `--use-cache` | off | Read the cache instead of fetching, and skip the token. |
+| `ALLOW_STALE` | `--allow-stale` | off | Ignore the freshness rule. |
+
+The last three exist for local development only. CI always fetches fresh data and always
+enforces the freshness rule.
+
+Changing `--horizon-days` changes the whole pipeline consistently: the number of targets,
+the columns the model predicts, `horizonDays` and `metrics` in `index.json`, and the
+length of each player's series. Every extra day also holds one more day out of training,
+since a training row needs all of its targets.
 
 A quick loop that avoids re-downloading everything:
 
 ```bash
-WRITE_CACHE=1 python run_forecast.py          # once, to fill the cache
-USE_CACHE=1 ALLOW_STALE=1 python run_forecast.py   # afterwards, offline
+python run_forecast.py --write-cache               # once, to fill the cache
+python run_forecast.py --use-cache --allow-stale   # afterwards, offline
 ```
 
 ## Setting up a fork
 
-1. Add the repository secrets `KICK_USER` and `KICK_PASS`.
+1. Add the repository secret `KICK_TOKEN`.
 2. Settings → Pages → Source: **GitHub Actions**.
 3. Actions tab: enable workflows — forks have them disabled by default.
 4. Run the *Forecast* workflow once via "Run workflow" and open the Pages URL.
 
 Note that this repository is public so that GitHub Pages works on the Free plan, which
-means **workflow logs are public**. The code therefore never prints the token, the
-credentials or raw API responses, and neither should anything you add.
+means **workflow logs are public**. The code therefore never prints the token or raw API
+responses, and neither should anything you add.
 
 ## Known issue
 

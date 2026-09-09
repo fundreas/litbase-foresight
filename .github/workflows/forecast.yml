@@ -65,11 +65,8 @@ jobs:
         id: forecast
         if: steps.gate.outputs.run == 'true'
         env:
-          KICK_USER: ${{ secrets.KICK_USER }}
-          KICK_PASS: ${{ secrets.KICK_PASS }}
-          COMPETITION_ID: '1'
-          OUTPUT_DIR: output
-        run: python run_forecast.py
+          KICK_TOKEN: ${{ secrets.KICK_TOKEN }}
+        run: python run_forecast.py --competition-id 1 --horizon-days 5 --output-dir output
 
       - name: Upload Pages artifact
         if: steps.forecast.outputs.fresh == 'true'

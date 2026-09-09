@@ -1,11 +1,11 @@
-from kickbase_api.config import BASE_URL, get_json_with_token
+from kickbase_api.config import get_base_url, get_json_with_token
 
 # All other functions that don't fit anywhere else
 
 def get_all_teams(token, competition_id):
     """Get all teams in a competition."""
 
-    url = f"{BASE_URL}/competitions/{competition_id}/table"
+    url = f"{get_base_url()}/competitions/{competition_id}/table"
     data = get_json_with_token(url, token)
 
     teams = [

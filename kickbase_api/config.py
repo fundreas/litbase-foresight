@@ -1,12 +1,41 @@
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import requests
+import os
 
-BASE_URL = "https://api.kickbase.com/v4"
+# The current production API. Override with KICK_API or --api-base.
+DEFAULT_BASE_URL = "https://api.kickbase.com/v4"
+
 REQUEST_TIMEOUT = 30
 MAX_WORKERS = 12
 
 _session = None
+
+def get_base_url():
+    """Base URL of the Kickbase API.
+
+    Read lazily rather than captured at import time, so a .env file or a command
+    line override still applies no matter when this module was first imported.
+    """
+
+    return os.getenv("KICK_API", DEFAULT_BASE_URL).rstrip("/")
+
+def get_token():
+    """The Kickbase JWT to authenticate with.
+
+    Deliberately environment-only: a token passed as a command line argument
+    would show up in process listings and shell history.
+    """
+
+    token = os.getenv("KICK_TOKEN")
+
+    if not token:
+        raise RuntimeError(
+            "Missing KICK_TOKEN: set it to a valid Kickbase JWT "
+            "(a GitHub secret in CI, a local .env file otherwise)."
+        )
+
+    return token
 
 def get_session():
     """Return a shared requests session with retries for transient API failures."""
@@ -40,6 +69,15 @@ def get_json_with_token(url, token):
         headers={"Authorization": f"Bearer {token}"},
         timeout=REQUEST_TIMEOUT,
     )
+
+    # A JWT has a limited lifetime, and an expired one is the most likely reason
+    # for this pipeline to start failing, so say so instead of just the status.
+    if resp.status_code in (401, 403):
+        raise RuntimeError(
+            f"Kickbase API rejected the token with HTTP {resp.status_code}. "
+            "KICK_TOKEN has most likely expired and needs to be refreshed."
+        )
+
     # Only the status and URL are surfaced -- response bodies never reach the log,
     # because CI logs of this repo are public.
     if not resp.ok:

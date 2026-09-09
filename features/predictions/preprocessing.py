@@ -1,9 +1,8 @@
 import pandas as pd
 import numpy as np
 
-# The forecast horizons in days. Each one gets its own target column and its own
-# output entry, predicted directly (not recursively) by a single multi-output model.
-HORIZONS = (1, 2, 3, 4, 5)
+# How many days ahead to forecast by default, overridable per run
+DEFAULT_HORIZON_DAYS = 5
 
 # Which features to use for training and prediction
 FEATURES = [
@@ -13,13 +12,24 @@ FEATURES = [
     "mv_trend_7d", "market_divergence",
 ]
 
-# What columns to learn and predict on, one per horizon
-TARGET_COLUMNS = [f"mv_target_h{k}_clipped" for k in HORIZONS]
+def horizons_for(horizon_days):
+    """The forecast horizons in days: 1..horizon_days.
 
-def preprocess_player_data(df):
-    """Build features and the five per-horizon targets.
+    Each one gets its own target column and its own output entry, predicted
+    directly (not recursively) by a single multi-output model.
+    """
 
-    Returns (train_df, inference_df). train_df holds every row that has all five
+    return tuple(range(1, horizon_days + 1))
+
+def target_columns(horizons):
+    """What columns to learn and predict on, one per horizon."""
+
+    return [f"mv_target_h{k}_clipped" for k in horizons]
+
+def preprocess_player_data(df, horizons):
+    """Build features and one target per horizon.
+
+    Returns (train_df, inference_df). train_df holds every row that has all
     targets, inference_df the single most recent row with a market value per player.
     """
 
@@ -44,7 +54,7 @@ def preprocess_player_data(df):
     # 3. Multi-horizon targets: the market value change k days ahead.
     # The market value history is a contiguous daily series per player, so a
     # positional shift of k rows equals a calendar shift of k days.
-    for k in HORIZONS:
+    for k in horizons:
         df[f"mv_target_h{k}"] = df.groupby("player_id")["mv"].shift(-k) - df["mv"]
 
     df = df[df["mv"] != 0.0]
@@ -67,7 +77,7 @@ def preprocess_player_data(df):
     df["market_divergence"] = (df["mv"] / df.groupby("md")["mv"].transform("mean")).rolling(3).mean()
 
     # 5. Clip outliers per horizon, each with its own IQR bounds
-    for k in HORIZONS:
+    for k in horizons:
         target = df[f"mv_target_h{k}"]
 
         Q1 = target.quantile(0.25)
@@ -93,9 +103,10 @@ def preprocess_player_data(df):
     with_mv = df[df["mv"].notna()]
     inference_df = df.loc[with_mv.groupby("player_id")["date"].idxmax()].copy()
 
-    # 8. Training rows need all five targets, so the last five days of a player's
-    # history (the inference row among them) are never training rows.
-    train_df = df.dropna(subset=FEATURES + [f"mv_target_h{k}" for k in HORIZONS] + TARGET_COLUMNS)
+    # 8. Training rows need every target, so the last len(horizons) days of a
+    # player's history (the inference row among them) are never training rows.
+    targets = [f"mv_target_h{k}" for k in horizons] + target_columns(horizons)
+    train_df = df.dropna(subset=FEATURES + targets)
 
     # 9. A player whose history is too short to have any past matchday has no
     # days_to_next, and the last row of a season has no upcoming matchday either.
