@@ -122,7 +122,7 @@ that nudges the repo every 45 days.
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-printf 'KICK_TOKEN=eyJhbGciOi...\n' > .env
+printf 'KICK_USER=you@example.com\nKICK_PASS=your-password\n' > .env
 python run_forecast.py
 ```
 
@@ -138,17 +138,23 @@ The output lands in `output/`. Fetching the whole competition takes a few minute
 
 ### Authentication
 
-There is no login step. `KICK_TOKEN` is a Kickbase JWT that you obtain yourself — grab
-the `Authorization: Bearer` header from a logged-in Kickbase session in your browser's
-network tab, or POST to `/user/login` once by hand and keep the `tkn` field.
+Normally the run logs in with `KICK_USER` and `KICK_PASS` (email and password is all the
+endpoint supports) and mints a fresh token for itself.
 
-**A JWT expires.** When it does, every request fails with `401`/`403` and the run
-reports that the token needs refreshing rather than a bare status code. Nothing here
-renews it for you, so a dead token means a dead schedule until you update the secret.
-That is the trade for not putting your password in CI.
+`KICK_TOKEN` short-circuits that: set it to a Kickbase JWT you already have — the
+`Authorization: Bearer` header from a logged-in session in your browser's network tab —
+and no login happens. Handy for a one-off local run, but **a Kickbase token lives only
+seven days**, which is why the scheduled workflow uses credentials instead. A token that
+never renews would take the daily schedule down with it every week.
 
-The token is read from the environment only, never from a command line argument, so it
-cannot leak into process listings or shell history.
+The two combine sensibly. `KICK_TOKEN` wins while it is valid; once its `exp` claim has
+passed the run says so and logs in instead, so a stale token left in a `.env` cannot
+quietly shadow working credentials. The `exp` claim is read without verifying the
+signature — it only decides whether the token is worth sending, and the API remains the
+authority on whether it is actually valid.
+
+Both are read from the environment only, never from a command line argument, so neither
+can leak into process listings or shell history.
 
 ### Options
 
@@ -157,7 +163,9 @@ flags. Run `python run_forecast.py --help` for the full list.
 
 | Variable | Flag | Default | Meaning |
 | --- | --- | --- | --- |
-| `KICK_TOKEN` | – | – | Kickbase JWT. Required. Environment only. |
+| `KICK_USER` | – | – | Kickbase email. Required unless `KICK_TOKEN` is set. |
+| `KICK_PASS` | – | – | Kickbase password. Required unless `KICK_TOKEN` is set. |
+| `KICK_TOKEN` | – | – | Existing JWT; skips the login while it is valid. |
 | `KICK_API` | `--api-base` | `https://api.kickbase.com/v4` | Base URL of the Kickbase API. |
 | `HORIZON_DAYS` | `--horizon-days` | `5` | How many days ahead to forecast (1–30). |
 | `COMPETITION_ID` | `--competition-id` | `1` | 1 = Bundesliga, 2 = 2. Bundesliga, 3 = La Liga. |
@@ -187,14 +195,15 @@ python run_forecast.py --use-cache --allow-stale   # afterwards, offline
 
 ## Setting up a fork
 
-1. Add the repository secret `KICK_TOKEN`.
+1. Add the repository secrets `KICK_USER` and `KICK_PASS`.
 2. Settings → Pages → Source: **GitHub Actions**.
 3. Actions tab: enable workflows — forks have them disabled by default.
 4. Run the *Forecast* workflow once via "Run workflow" and open the Pages URL.
 
 Note that this repository is public so that GitHub Pages works on the Free plan, which
-means **workflow logs are public**. The code therefore never prints the token or raw API
-responses, and neither should anything you add.
+means **workflow logs are public**. The code therefore never prints the token, the
+credentials or raw API responses — not even the status text of a failed login, which can
+echo the submitted email address — and neither should anything you add.
 
 ## Known issue
 

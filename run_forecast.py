@@ -14,7 +14,8 @@ from features.predictions.data_handler import (
 from features.predictions.modeling import train_model, evaluate_model, format_metrics_table
 from features.predictions.predictions import predict_horizons
 from features.output_writer import write_output
-from kickbase_api.config import DEFAULT_BASE_URL, get_token
+from kickbase_api.config import DEFAULT_BASE_URL
+from kickbase_api.user import get_token
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv

@@ -67,7 +67,10 @@ jobs:
         id: forecast
         if: steps.gate.outputs.run == 'true'
         env:
-          KICK_TOKEN: ${{ secrets.KICK_TOKEN }}
+          # Credentials rather than a token: a Kickbase JWT lives seven days, so a
+          # daily schedule has to be able to mint its own on every run.
+          KICK_USER: ${{ secrets.KICK_USER }}
+          KICK_PASS: ${{ secrets.KICK_PASS }}
         run: python run_forecast.py --competition-id 1 --horizon-days 5 --output-dir output
 
       - name: Report the market value date
