@@ -4,16 +4,6 @@ from datetime import datetime, timedelta
 
 # All functions related to player data
 
-def get_player_id(token, competition_id, name):
-    """Search for a player by name and return their player ID."""
-
-    url = f"{BASE_URL}/competitions/{competition_id}/players/search?query={name}"
-    data = get_json_with_token(url, token)
-
-    player_id = data["it"][0]["pi"]  # Gets first player's ID directly, assuming the search returns only one result
-
-    return player_id
-
 def get_player_market_value(token, competition_id, player_id, last_mv_values):
     """Get the market value history of a player."""
 

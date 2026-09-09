@@ -1,7 +1,5 @@
 scikit-learn
-matplotlib
 python-dotenv
 pandas
 numpy
-IPython
 requests
