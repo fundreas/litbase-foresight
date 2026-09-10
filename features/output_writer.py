@@ -16,20 +16,33 @@ model metrics are in <code>data/index.json</code>.</p>
 """
 
 def _player_series(row, horizons):
-    """Build the six-entry series of one player: the actual value, then the forecasts."""
+    """Build the six-entry series of one player: the actual value, then the forecasts.
+
+    The model predicts one 24 hour change per horizon, so the levels are the
+    running sum of those changes on top of the latest actual market value.
+    Every forecast entry also carries the change itself as `delta`.
+
+    `delta` is derived from the published levels rather than straight from the
+    prediction, so `mv` minus the previous entry's `mv` always equals `delta`
+    exactly -- rounding and the clamp at zero cannot pull the two apart.
+    """
 
     latest_date = row["date"].date()
     latest_mv = int(round(row["mv"]))
 
     series = [{"date": latest_date.isoformat(), "mv": latest_mv}]
+    previous_mv = latest_mv
 
     for horizon in horizons:
-        forecast = latest_mv + row[f"pred_h{horizon}"]
+        forecast_mv = max(0, int(round(previous_mv + row[f"pred_h{horizon}"])))
 
         series.append({
             "date": (latest_date + timedelta(days=horizon)).isoformat(),
-            "mv": max(0, int(round(forecast))),
+            "mv": forecast_mv,
+            "delta": forecast_mv - previous_mv,
         })
+
+        previous_mv = forecast_mv
 
     return series
 

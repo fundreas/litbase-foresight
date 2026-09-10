@@ -21,21 +21,27 @@ https://fundreas.github.io/litbase-foresight/data/<player-id>.json
 
 `data/<player-id>.json` is a six-entry series. The **first entry is the actual latest
 market value** with the date Kickbase stamped it; the following five are the forecasts
-for the next five days:
+for the next five days. Each forecast entry carries both the level and `delta`, the
+**24 hour change against the previous entry**, which is what the model actually predicts:
 
 ```json
 [
   {"date": "2026-09-09", "mv": 12345678},
-  {"date": "2026-09-10", "mv": 12400000},
-  {"date": "2026-09-11", "mv": 12450000},
-  {"date": "2026-09-12", "mv": 12480000},
-  {"date": "2026-09-13", "mv": 12500000},
-  {"date": "2026-09-14", "mv": 12510000}
+  {"date": "2026-09-10", "mv": 12400000, "delta": 54322},
+  {"date": "2026-09-11", "mv": 12450000, "delta": 50000},
+  {"date": "2026-09-12", "mv": 12480000, "delta": 30000},
+  {"date": "2026-09-13", "mv": 12500000, "delta": 20000},
+  {"date": "2026-09-14", "mv": 12510000, "delta": 10000}
 ]
 ```
 
 Market values are integer euros and never negative. Dates are `YYYY-MM-DD`. Player and
 team ids are strings.
+
+The first entry has no `delta` — it is an observation, not a forecast. For every other
+entry `mv` minus the previous entry's `mv` equals `delta` exactly: the deltas are derived
+back out of the published levels, so rounding and the clamp at zero can never make the
+two disagree.
 
 `data/index.json` lists every player in the current output, along with the model's
 accuracy on its own test split:
@@ -47,8 +53,11 @@ accuracy on its own test split:
   "mvDate": "2026-09-09",
   "horizonDays": 5,
   "metrics": {
-    "h1": {"signAccuracy": 71.99, "mae": 21786.75, "rmse": 41468.12, "r2": 0.9161, "testRows": 34262},
-    "h2": {"signAccuracy": 70.85, "mae": 54917.66, "rmse": 100849.78, "r2": 0.8729, "testRows": 34262}
+    "h1": {
+      "signAccuracy": 95.32, "mae": 21850.66, "rmse": 41487.15, "r2": 0.916,
+      "testRows": 34262, "movedRows": 25870, "flatShare": 24.49,
+      "baseline": {"signAccuracy": 94.53, "mae": 28921.99, "rmse": 102979.17, "r2": 0.4824}
+    }
   },
   "players": [
     {"id": "7226", "firstName": "Harry", "lastName": "Kane", "team": "Bayern", "teamId": "2", "position": 4}
@@ -69,17 +78,54 @@ Features per player and day: matchday points, current market value, days to the 
 matchday, 1-day change and trend, 3-day change and volatility, 7-day trend, and the
 player's market value relative to the league average.
 
-The targets are direct horizons, `mv.shift(-k) - mv` for k in 1..5, each clipped to its
-own IQR bounds. A single `RandomForestRegressor` is fitted with all five as a
-multi-output target, so **no prediction is ever fed back in as a feature** — day 5 is
-predicted from today's data, not from the day-4 prediction. Accuracy degrades with the
-horizon, as you would expect; `metrics` in `index.json` says by how much.
+The objective is the **24 hour change**, not the market value itself. Target k is
+`mv(t+k) - mv(t+k-1)`, the move on day k alone, each clipped to its own IQR bounds. A
+single `RandomForestRegressor` is fitted with all five as a multi-output target, so **no
+prediction is ever fed back in as a feature** — day 5 is predicted from today's data, not
+from the day-4 prediction. The published levels are the running sum of the five predicted
+changes on top of the latest actual value.
 
 A row is only a training row if all of its targets exist, which means the last five days
 of each player's history are held out. The most recent day with a market value is the row
 the forecast is made from.
 
 Five days is the default, not a hard-coded assumption — see `--horizon-days` below.
+
+### Reading the metrics
+
+Roughly a quarter of all player-days are a market value that **did not move at all** —
+cheap bench players the market ignores, median value 500,000 against 8.0M for rows that
+do move, with 72 players frozen on more than 90% of days. Those rows make a naive sign
+accuracy meaningless in both directions: `sign(0)` never equals the sign of a continuous
+prediction, so scoring them caps the metric at ~75% however good the model is, while a
+"predict no change" rule collects them all for free.
+
+So `signAccuracy` is measured **only on rows that actually moved**, and `flatShare` and
+`movedRows` report how many were set aside. `baseline` is persistence — "the next 24 hour
+change equals the last one" — because on a series this autocorrelated a high R² means
+little without something trivial to compare against.
+
+What that comparison shows is worth knowing before you build on these numbers:
+
+```
+ horizon  flat % |   signs %          MAE       R2 |  base signs     base MAE  base R2
+      h1   24.49 |     95.32       21,851   0.9160 |       94.53       28,922   0.4824
+      h2   24.51 |     90.90       36,127   0.7945 |       89.96       46,725   0.2798
+      h3   24.54 |     86.89       48,913   0.6600 |       85.74       61,251   0.0713
+      h4   24.57 |     82.71       60,251   0.5306 |       81.56       73,828  -0.1449
+      h5   24.61 |     79.13       69,243   0.4212 |       77.65       84,489  -0.3474
+```
+
+**The model's value is in the magnitude, not the direction.** Direction is nearly free:
+persistence alone calls tomorrow correctly 94.53% of the time and the model adds 0.79
+points on top of it, because Kickbase market values move in streaks. On *how far* a value
+moves the model wins properly — a third off the h1 error, and it still holds R² 0.42 at
+day 5 where persistence has gone negative.
+
+One consequence of a regression objective: nothing can output exactly zero, so all 80
+players frozen for their last 30 days are still forecast to move, by a median of 11,662
+over five days. Small against a 500,000 value, but it is noise rather than signal, and a
+consumer that cares should treat a flat history as flat.
 
 ## Schedule and the freshness rule
 
@@ -206,14 +252,23 @@ means **workflow logs are public**. The code therefore never prints the token, t
 credentials or raw API responses — not even the status text of a failed login, which can
 echo the submitted email address — and neither should anything you add.
 
-## Known issue
+## Known issues
 
 `merge_asof` joins a performance row onto the market value row of the same date. A match
 that kicks off in the evening finishes *after* the ~20:00 UTC recalculation, so its
 points are attached to a market value that could not have known about them — the match
 result leaks into that day's features. The fix is to shift a performance row to the next
-day when kick-off + 2h is later than 20:00 UTC. Tracked as a TODO in `run_forecast.py`;
-it makes the reported metrics somewhat optimistic.
+day when kick-off + 2h is later than 20:00 UTC. Tracked as a TODO in `run_forecast.py`.
+
+The leak is real but small: refitting without the `p` feature entirely moves h1 from
+R² 0.9161 to 0.9136, and `p` carries about 3% of the feature importance. The model runs
+almost entirely on the market value's own recent history — `mv_change_1d` at 34% and
+`mv_trend_1d` at 20%. So the reported metrics are mildly optimistic, not inflated.
+
+Separately, the IQR clip bounds in `preprocess_player_data` are computed over the whole
+frame *before* the train/test split, so the test set's own distribution informs how its
+targets are clipped. It shrinks the tails on both sides of the split, which flatters MAE
+and RMSE a little against real euros.
 
 ## Credits
 

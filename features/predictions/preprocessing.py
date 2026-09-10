@@ -15,8 +15,10 @@ FEATURES = [
 def horizons_for(horizon_days):
     """The forecast horizons in days: 1..horizon_days.
 
-    Each one gets its own target column and its own output entry, predicted
-    directly (not recursively) by a single multi-output model.
+    Horizon k is the 24 hour change on day k -- mv(t+k) - mv(t+k-1) -- not the
+    cumulative change since today. Each one gets its own target column and its
+    own output entry, predicted directly (not recursively) by a single
+    multi-output model.
     """
 
     return tuple(range(1, horizon_days + 1))
@@ -51,11 +53,15 @@ def preprocess_player_data(df, horizons):
     )
     df["days_to_next"] = (df["next_md"] - df["date"]).dt.days
 
-    # 3. Multi-horizon targets: the market value change k days ahead.
+    # 3. Multi-horizon targets: the 24 hour market value change on day k, i.e.
+    # mv(t+k) - mv(t+k-1). Horizon 1 is therefore tomorrow's change against
+    # today, and each later horizon is that day's own move rather than the
+    # total since today -- the series is rebuilt by summing them.
     # The market value history is a contiguous daily series per player, so a
     # positional shift of k rows equals a calendar shift of k days.
+    grouped_mv = df.groupby("player_id")["mv"]
     for k in horizons:
-        df[f"mv_target_h{k}"] = df.groupby("player_id")["mv"].shift(-k) - df["mv"]
+        df[f"mv_target_h{k}"] = grouped_mv.shift(-k) - grouped_mv.shift(-(k - 1))
 
     df = df[df["mv"] != 0.0]
 
