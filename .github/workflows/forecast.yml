@@ -30,18 +30,34 @@ jobs:
       fresh: ${{ steps.forecast.outputs.fresh }}          # informational: was it today's data
       mv_date: ${{ steps.forecast.outputs.mv_date }}
     steps:
-      - name: Decide whether this is the 22:xx Berlin run
+      # Which cron fired, never what time it is now: GitHub deprioritises scheduled
+      # runs and routinely dispatches them one to three hours late, so the wall clock
+      # says nothing about which entry this run came from.
+      - name: Decide whether this cron entry matches the current Berlin offset
         id: gate
+        env:
+          SCHEDULE: ${{ github.event.schedule }}
         run: |
-          hour=$(TZ=Europe/Berlin date +%H)
           if [ "${{ github.event_name }}" != "schedule" ]; then
-            echo "Manual run at Berlin hour $hour, not gating on the clock."
+            echo "Manual run, not gating on the calendar."
             echo "run=true" >> "$GITHUB_OUTPUT"
-          elif [ "$hour" = "22" ]; then
-            echo "Berlin hour is $hour, this is the run for today."
+            exit 0
+          fi
+
+          # +0200 in summer (CEST): the 20:xx UTC entries are 22:xx Berlin
+          # +0100 in winter (CET):  the 21:xx UTC entries are 22:xx Berlin
+          case "$(TZ=Europe/Berlin date +%z)" in
+            +0200) want=20 ;;
+            *)     want=21 ;;
+          esac
+
+          fired=$(set -- $SCHEDULE; echo "$2")
+
+          if [ "$fired" = "$want" ]; then
+            echo "Cron '$SCHEDULE' is the ${want}:xx UTC pair, which is 22:xx Berlin today."
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
-            echo "Berlin hour is $hour, not 22. This cron entry belongs to the other DST offset, skipping."
+            echo "Cron '$SCHEDULE' is the ${fired}:xx UTC pair, but 22:xx Berlin is ${want}:xx UTC today. This entry belongs to the other DST offset, skipping."
             echo "run=false" >> "$GITHUB_OUTPUT"
           fi
 
